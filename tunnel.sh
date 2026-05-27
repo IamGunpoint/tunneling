@@ -42,26 +42,24 @@ progress_bar() {
 install_deps() {
     draw_header
     echo -e "${CYAN}🚀 Starting Installation...${NC}\n"
-    
-    echo -e "${YELLOW}📦 Updating Repository...${NC}"
     sudo apt update -y > /dev/null 2>&1
     progress_bar 1 "System Update"
-
-    echo -e "${YELLOW}📦 Installing Node.js & NPM...${NC}"
     sudo apt install -y curl npm > /dev/null 2>&1
     progress_bar 1 "Node.js Setup"
-
-    echo -e "${YELLOW}📦 Installing PM2 Manager...${NC}"
     sudo npm install -g pm2 > /dev/null 2>&1
     progress_bar 1 "PM2 Installation"
-
-    echo -e "${YELLOW}📦 Fetching Bore Tunnel Binary...${NC}"
     curl -Ls https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -zxf -
     sudo mv bore /usr/local/bin/ > /dev/null 2>&1
     progress_bar 1 "Bore Tunnel Setup"
-
     echo -e "\n${GREEN}✨ All dependencies installed successfully!${NC}"
     read -p "Press Enter to return to menu..."
+}
+
+# Helper function to get address from logs
+fetch_address() {
+    local NAME=$1
+    # Search logs for bore.pub, replace with IP, and ensure we only get the last unique line
+    pm2 logs "$NAME" --lines 100 --nostream | grep -oEi 'bore\.pub:[0-9]+' | tail -n 1 | sed 's/bore.pub/161.35.110.36/I'
 }
 
 # 2. Run Tunnel
@@ -71,15 +69,23 @@ run_tunnel() {
     read -p "🎯 Enter the local port to tunnel: " PORT
     if [[ -z "$PORT" ]]; then echo "Invalid port"; sleep 1; return; fi
     
-    pm2 start "bore local $PORT --to bore.pub" --name "tunnel-$PORT" --log-date-format "YYYY-MM-DD HH:mm Z"
+    # Check if process exists to avoid duplicates in pm2
+    pm2 delete "tunnel-$PORT" > /dev/null 2>&1
+    pm2 start "bore local $PORT --to bore.pub" --name "tunnel-$PORT"
     
-    echo -e "\n${GREEN}🚀 Tunnel 'tunnel-$PORT' is now running in background!${NC}"
-    echo -e "${YELLOW}⏳ Waiting 3s for server to assign your public IP...${NC}"
-    sleep 3
-    # Attempt to show the assigned port immediately
-    PUB_ADDR=$(pm2 logs "tunnel-$PORT" --lines 5 --nostream | grep -o 'bore.pub:[0-9]*' | tail -n 1)
+    echo -e "\n${GREEN}🚀 Tunnel 'tunnel-$PORT' is now running!${NC}"
+    echo -e "${YELLOW}⏳ Fetching public address...${NC}"
+    
+    for i in {1..5}; do
+        sleep 2
+        PUB_ADDR=$(fetch_address "tunnel-$PORT")
+        if [ ! -z "$PUB_ADDR" ]; then break; fi
+    done
+
     if [ ! -z "$PUB_ADDR" ]; then
         echo -e "${CYAN}🔗 Your Public Address: ${NC}${PURPLE}http://$PUB_ADDR${NC}"
+    else
+        echo -e "${RED}⚠️ Startup deep-scan: Address not found yet. Check Menu [3] in a moment.${NC}"
     fi
     read -p "Press Enter to continue..."
 }
@@ -90,18 +96,17 @@ show_tunnels() {
     echo -e "${CYAN}📊 Active Tunnels List${NC}"
     echo "----------------------------------------------------"
     
-    # List all PM2 processes starting with tunnel-
-    TUNNELS=$(pm2 list | grep "tunnel-" | awk '{print $4}')
+    # Get unique tunnel names only
+    TUNNELS=$(pm2 list | grep "tunnel-" | awk '{print $4}' | sort | uniq)
     
     if [ -z "$TUNNELS" ]; then
         echo -e "${RED}No active tunnels found.${NC}"
     else
         for T in $TUNNELS; do
-            # Extracting the public address from logs
-            ADDR=$(pm2 logs "$T" --lines 10 --nostream | grep -o 'bore.pub:[0-9]*' | tail -n 1)
-            STATUS=$(pm2 jlist | grep -o "\"name\":\"$T\".*\"status\":\"[a-z]*\"" | cut -d'"' -f8)
-            echo -e "${YELLOW}Name:${NC} $T | ${YELLOW}Status:${NC} $STATUS"
-            echo -e "${GREEN}Address:${NC} ${ADDR:-"Detecting..."}"
+            ADDR=$(fetch_address "$T")
+            STATUS=$(pm2 jlist | grep -oP "(?<=\"name\":\"$T\").*?\"status\":\"\K[^\"]+" | head -n 1)
+            echo -e "${YELLOW}Name:${NC} $T | ${YELLOW}Status:${NC} ${GREEN}${STATUS}${NC}"
+            echo -e "${GREEN}Address:${NC} ${ADDR:-"${RED}Detecting/Offline${NC}"}"
             echo "----------------------------------------------------"
         done
     fi
@@ -114,14 +119,14 @@ delete_tunnel() {
     echo -e "${RED}🗑️ Delete a Tunnel${NC}"
     read -p "❌ Enter the port of the tunnel to kill: " PORT
     pm2 delete "tunnel-$PORT"
-    echo -e "${GREEN}✅ Tunnel on port $PORT has been stopped and deleted.${NC}"
+    echo -e "${GREEN}✅ Tunnel on port $PORT removed.${NC}"
     read -p "Press Enter to continue..."
 }
 
 # Main Loop
 while true; do
     draw_header
-    echo -e "${CYAN}  [1]${NC} 📥 Install Setup ${GRAY}(First time only)${NC}"
+    echo -e "${CYAN}  [1]${NC} 📥 Install Setup"
     echo -e "${CYAN}  [2]${NC} 🌐 Create New Tunnel"
     echo -e "${CYAN}  [3]${NC} 📋 View Active Tunnels & IPs"
     echo -e "${CYAN}  [4]${NC} 🗑️  Delete Tunnel"
